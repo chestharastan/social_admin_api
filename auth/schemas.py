@@ -1,14 +1,9 @@
-from typing import Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
 
 UserRole = Literal["admin", "manager"]
-
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
 
 
 class SupabaseSession(BaseModel):
@@ -20,12 +15,16 @@ class SupabaseSession(BaseModel):
 class SupabaseUser(BaseModel):
     id: str
     email: Optional[str] = None
-    profile: Optional[Dict[str, object]] = None
+    profile: Optional[Dict[str, Any]] = None
 
 
 class SupabaseLoginRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
+
+
+class SupabaseRefreshRequest(BaseModel):
+    refresh_token: str
 
 
 class SupabaseCreateUserRequest(BaseModel):
@@ -41,4 +40,4 @@ class SupabaseProfile(BaseModel):
     email: Optional[str] = None
     role: Optional[UserRole] = None
     full_name: Optional[str] = None
-    data: Optional[Dict[str, object]] = None
+    data: Optional[Dict[str, Any]] = None

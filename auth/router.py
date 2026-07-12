@@ -1,11 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 
-from auth.schemas import SupabaseCreateUserRequest, SupabaseLoginRequest, SupabaseProfile, SupabaseSession, SupabaseUser
+from auth.schemas import (
+    SupabaseCreateUserRequest,
+    SupabaseLoginRequest,
+    SupabaseProfile,
+    SupabaseRefreshRequest,
+    SupabaseSession,
+    SupabaseUser,
+)
 from auth.service import (
     create_supabase_user,
     get_current_admin_user,
     get_current_supabase_user,
     get_supabase_profile,
+    refresh_supabase_session,
     sign_in_with_supabase,
 )
 
@@ -13,14 +21,40 @@ from auth.service import (
 router = APIRouter()
 
 
-@router.post("/login", response_model=SupabaseSession, summary="Sign in with Supabase", description="Authenticate a user against Supabase Auth and return the Supabase session tokens.")
+@router.post(
+    "/login",
+    response_model=SupabaseSession,
+    summary="Login",
+)
 def login(credentials: SupabaseLoginRequest):
-    session = sign_in_with_supabase(credentials.email, credentials.password)
-    return {
-        "access_token": session.access_token,
-        "refresh_token": session.refresh_token,
-        "token_type": "bearer",
-    }
+    return sign_in_with_supabase(credentials.email, credentials.password)
+
+
+@router.post(
+    "/refresh",
+    response_model=SupabaseSession,
+    summary="Refresh token",
+)
+def refresh_token(payload: SupabaseRefreshRequest):
+    return refresh_supabase_session(payload)
+
+
+@router.get(
+    "/me",
+    response_model=SupabaseUser,
+    summary="Current user",
+)
+def me(current_user: SupabaseUser = Depends(get_current_supabase_user)):
+    return current_user
+
+
+@router.get(
+    "/me/profile",
+    response_model=SupabaseProfile,
+    summary="Current user profile",
+)
+def me_profile(current_user: SupabaseUser = Depends(get_current_supabase_user)):
+    return get_supabase_profile(current_user.id)
 
 
 @router.post(
@@ -28,17 +62,9 @@ def login(credentials: SupabaseLoginRequest):
     response_model=SupabaseProfile,
     status_code=status.HTTP_201_CREATED,
     summary="Create user",
-    description="Create a Supabase Auth user and store the selected role in the profile table. Requires an admin bearer token.",
 )
-def create_user(payload: SupabaseCreateUserRequest, _: SupabaseUser = Depends(get_current_admin_user)):
+def create_user(
+    payload: SupabaseCreateUserRequest,
+    _: SupabaseUser = Depends(get_current_admin_user),
+):
     return create_supabase_user(payload)
-
-
-@router.get("/me", response_model=SupabaseUser, summary="Get authenticated user", description="Return the Supabase user associated with the provided bearer token.")
-def me(current_user: SupabaseUser = Depends(get_current_supabase_user)):
-    return current_user
-
-
-@router.get("/me/profile", response_model=SupabaseProfile, summary="Get auth profile", description="Fetch the user's row from the configured Supabase profile table.")
-def me_profile(current_user: SupabaseUser = Depends(get_current_supabase_user)):
-    return get_supabase_profile(current_user.id)

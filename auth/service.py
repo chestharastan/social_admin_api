@@ -2,15 +2,42 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from supabase_auth.errors import AuthApiError
 
-from auth.config import SUPABASE_PROFILE_TABLE, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_ANON_KEY, SUPABASE_URL
+from auth.config import (
+    SUPABASE_ANON_KEY,
+    SUPABASE_PROFILE_TABLE,
+    SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_URL,
+)
 from auth.providers.supabase import get_supabase_admin_client, get_supabase_client
-from auth.schemas import SupabaseCreateUserRequest, SupabaseProfile, SupabaseUser
+from auth.schemas import (
+    SupabaseCreateUserRequest,
+    SupabaseProfile,
+    SupabaseRefreshRequest,
+    SupabaseSession,
+    SupabaseUser,
+)
 
 
 supabase_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
-def _auth_exception(detail: str) -> HTTPException:
+def _require_supabase_auth_config() -> None:
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Supabase auth is not configured",
+        )
+
+
+def _require_supabase_admin_config() -> None:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Supabase admin access is not configured",
+        )
+
+
+def _invalid_credentials(detail: str = "Invalid Supabase credentials") -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=detail,
@@ -18,71 +45,101 @@ def _auth_exception(detail: str) -> HTTPException:
     )
 
 
-def sign_in_with_supabase(email: str, password: str):
-    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Supabase is not configured",
-        )
+def _session_response(session) -> SupabaseSession:
+    if session is None or session.access_token is None:
+        raise _invalid_credentials()
+
+    return SupabaseSession(
+        access_token=session.access_token,
+        refresh_token=session.refresh_token,
+        token_type=session.token_type or "bearer",
+    )
+
+
+def sign_in_with_supabase(email: str, password: str) -> SupabaseSession:
+    _require_supabase_auth_config()
 
     client = get_supabase_client()
     try:
-        response = client.auth.sign_in_with_password({"email": email, "password": password})
+        response = client.auth.sign_in_with_password(
+            {"email": str(email), "password": password}
+        )
     except AuthApiError as exc:
         if exc.status in (400, 401):
-            raise _auth_exception("Invalid Supabase credentials") from exc
+            raise _invalid_credentials() from exc
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Supabase authentication failed",
         ) from exc
 
-    session = response.session
+    return _session_response(response.session)
 
-    if session is None or session.access_token is None:
-        raise _auth_exception("Invalid Supabase credentials")
 
-    return session
+def refresh_supabase_session(payload: SupabaseRefreshRequest) -> SupabaseSession:
+    _require_supabase_auth_config()
+
+    client = get_supabase_client()
+    try:
+        response = client.auth.refresh_session(payload.refresh_token)
+    except AuthApiError as exc:
+        if exc.status in (400, 401, 403):
+            raise _invalid_credentials("Invalid refresh token") from exc
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Supabase token refresh failed",
+        ) from exc
+
+    return _session_response(response.session)
 
 
 def get_supabase_user(token: str) -> SupabaseUser:
-    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Supabase is not configured",
-        )
+    _require_supabase_auth_config()
 
     client = get_supabase_client()
     try:
         result = client.auth.get_user(token)
     except AuthApiError as exc:
         if exc.status in (400, 401, 403):
-            raise _auth_exception("Could not validate Supabase credentials") from exc
+            raise _invalid_credentials("Could not validate Supabase credentials") from exc
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Supabase authentication failed",
         ) from exc
 
     user = result.user
-
     if user is None:
-        raise _auth_exception("Could not validate Supabase credentials")
+        raise _invalid_credentials("Could not validate Supabase credentials")
 
     return SupabaseUser(id=user.id, email=user.email)
 
 
-def get_current_supabase_user(token: str = Depends(supabase_oauth2_scheme)) -> SupabaseUser:
+def get_current_supabase_user(
+    token: str = Depends(supabase_oauth2_scheme),
+) -> SupabaseUser:
     return get_supabase_user(token)
 
 
+def _profile_from_row(row: dict) -> SupabaseProfile:
+    return SupabaseProfile(
+        id=row.get("id"),
+        email=row.get("email"),
+        role=row.get("role"),
+        full_name=row.get("full_name"),
+        data=row,
+    )
+
+
 def get_supabase_profile(user_id: str) -> SupabaseProfile:
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Supabase admin access is not configured",
-        )
+    _require_supabase_admin_config()
 
     client = get_supabase_admin_client()
-    response = client.table(SUPABASE_PROFILE_TABLE).select("*").eq("id", user_id).limit(1).execute()
+    response = (
+        client.table(SUPABASE_PROFILE_TABLE)
+        .select("*")
+        .eq("id", user_id)
+        .limit(1)
+        .execute()
+    )
     rows = response.data or []
 
     if not rows:
@@ -91,17 +148,12 @@ def get_supabase_profile(user_id: str) -> SupabaseProfile:
             detail="Profile not found",
         )
 
-    profile = rows[0]
-    return SupabaseProfile(
-        id=profile.get("id"),
-        email=profile.get("email"),
-        role=profile.get("role"),
-        full_name=profile.get("full_name"),
-        data=profile,
-    )
+    return _profile_from_row(rows[0])
 
 
-def get_current_admin_user(current_user: SupabaseUser = Depends(get_current_supabase_user)) -> SupabaseUser:
+def get_current_admin_user(
+    current_user: SupabaseUser = Depends(get_current_supabase_user),
+) -> SupabaseUser:
     profile = get_supabase_profile(current_user.id)
 
     if profile.role != "admin":
@@ -114,16 +166,13 @@ def get_current_admin_user(current_user: SupabaseUser = Depends(get_current_supa
 
 
 def create_supabase_user(payload: SupabaseCreateUserRequest) -> SupabaseProfile:
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Supabase admin access is not configured",
-        )
+    _require_supabase_admin_config()
 
     client = get_supabase_admin_client()
-    metadata = {"role": payload.role}
-    if payload.full_name:
-        metadata["full_name"] = payload.full_name
+    user_metadata = {
+        "role": payload.role,
+        "full_name": payload.full_name,
+    }
 
     try:
         response = client.auth.admin.create_user(
@@ -131,7 +180,7 @@ def create_supabase_user(payload: SupabaseCreateUserRequest) -> SupabaseProfile:
                 "email": str(payload.email),
                 "password": payload.password,
                 "email_confirm": payload.email_confirm,
-                "user_metadata": metadata,
+                "user_metadata": user_metadata,
             }
         )
     except AuthApiError as exc:
@@ -146,21 +195,15 @@ def create_supabase_user(payload: SupabaseCreateUserRequest) -> SupabaseProfile:
         ) from exc
 
     user = response.user
-
     profile_data = {
         "id": user.id,
         "email": user.email,
         "role": payload.role,
         "full_name": payload.full_name,
     }
-    profile_response = client.table(SUPABASE_PROFILE_TABLE).upsert(profile_data).execute()
-    rows = profile_response.data or []
-    profile = rows[0] if rows else profile_data
-
-    return SupabaseProfile(
-        id=profile.get("id"),
-        email=profile.get("email"),
-        role=profile.get("role"),
-        full_name=profile.get("full_name"),
-        data=profile,
+    profile_response = (
+        client.table(SUPABASE_PROFILE_TABLE).upsert(profile_data).execute()
     )
+    rows = profile_response.data or []
+
+    return _profile_from_row(rows[0] if rows else profile_data)

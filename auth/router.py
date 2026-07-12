@@ -1,7 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from auth.schemas import SupabaseLoginRequest, SupabaseProfile, SupabaseSession, SupabaseUser
-from auth.service import get_current_supabase_user, get_supabase_profile, sign_in_with_supabase
+from auth.schemas import SupabaseCreateUserRequest, SupabaseLoginRequest, SupabaseProfile, SupabaseSession, SupabaseUser
+from auth.service import (
+    create_supabase_user,
+    get_current_admin_user,
+    get_current_supabase_user,
+    get_supabase_profile,
+    sign_in_with_supabase,
+)
 
 
 router = APIRouter()
@@ -15,6 +21,17 @@ def login(credentials: SupabaseLoginRequest):
         "refresh_token": session.refresh_token,
         "token_type": "bearer",
     }
+
+
+@router.post(
+    "/users",
+    response_model=SupabaseProfile,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create user",
+    description="Create a Supabase Auth user and store the selected role in the profile table. Requires an admin bearer token.",
+)
+def create_user(payload: SupabaseCreateUserRequest, _: SupabaseUser = Depends(get_current_admin_user)):
+    return create_supabase_user(payload)
 
 
 @router.get("/me", response_model=SupabaseUser, summary="Get authenticated user", description="Return the Supabase user associated with the provided bearer token.")

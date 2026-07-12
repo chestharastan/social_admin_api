@@ -1,6 +1,9 @@
-from typing import Dict, Optional
+from typing import Dict, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
+
+
+UserRole = Literal["admin", "manager"]
 
 
 class Token(BaseModel):
@@ -25,7 +28,17 @@ class SupabaseLoginRequest(BaseModel):
     password: str
 
 
+class SupabaseCreateUserRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    role: UserRole
+    full_name: Optional[str] = None
+    email_confirm: bool = True
+
+
 class SupabaseProfile(BaseModel):
     id: str
     email: Optional[str] = None
+    role: Optional[UserRole] = None
+    full_name: Optional[str] = None
     data: Optional[Dict[str, object]] = None
